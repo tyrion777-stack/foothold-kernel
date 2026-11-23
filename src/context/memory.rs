@@ -761,6 +761,11 @@ impl AddrSpace {
                     }
                     requested_span
                 } else if flags.contains(MapFlags::MAP_FIXED) {
+                    // Refuse to overwrite file-backed grants (shared library segments).
+                    // Anonymous-on-anonymous overwrites are permitted for jemalloc decommit/recommit.
+                    if self.grants.conflicts(requested_span).any(|(_, g)| g.is_file_backed()) {
+                        return Err(Error::new(EEXIST));
+                    }
                     let unpin = false;
                     let mut notify_files = Self::munmap_inner(
                         &mut self.grants,
@@ -1280,6 +1285,18 @@ pub struct Grant {
 pub struct GrantFileRef {
     pub description: Arc<LockedFileDescription>,
     pub base_offset: usize,
+}
+
+impl GrantInfo {
+    /// Returns true if this grant is backed by a file/scheme (e.g. a shared library segment).
+    /// Anonymous grants (heap, stack, jemalloc chunks) return false.
+    pub fn is_file_backed(&self) -> bool {
+        match &self.provider {
+            Provider::Allocated { cow_file_ref: Some(_), .. } => true,
+            Provider::FmapBorrowed { .. } => true,
+            _ => false,
+        }
+    }
 }
 
 impl Grant {
